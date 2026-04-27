@@ -2,16 +2,22 @@ import streamlit as st
 import subprocess
 from pathlib import Path
 import yaml
-from tkinter import Tk, filedialog
 import shutil
+import zipfile
+import tempfile
+import sys
 
-PYTHON = r"C:/Users/matte/anaconda3/envs/py310/python.exe"
+PYTHON = sys.executable
 CONFIG_PATH = Path("config.yaml")
-TEMP_DATASET_ROOT = Path("_temp_selected_dataset")
+TEMP_SELECTED_DATASET = Path("_temp_selected_dataset")
 
 st.set_page_config(page_title="HSI Plant Pixel Extraction", layout="wide")
 st.title("HSI Plant Pixel Extraction Pipeline")
 
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 def load_config():
     if CONFIG_PATH.exists():
@@ -25,13 +31,33 @@ def save_config(config):
         yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
 
 
-def select_folder():
-    root = Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    folder = filedialog.askdirectory()
-    root.destroy()
-    return folder
+config = load_config()
+
+
+# ============================================================
+# DATASET UPLOAD
+# ============================================================
+
+def find_dataset_root(unzipped_root: Path):
+    """
+    Cerca automaticamente la cartella dataset.
+    Un dataset valido contiene sottocartelle acquisizione con:
+    capture/ results/ metadata/
+    """
+    candidates = [unzipped_root] + [p for p in unzipped_root.rglob("*") if p.is_dir()]
+
+    for candidate in candidates:
+        acquisitions = [
+            p for p in candidate.iterdir()
+            if p.is_dir()
+            and (p / "capture").exists()
+            and (p / "results").exists()
+        ]
+
+        if acquisitions:
+            return candidate
+
+    return None
 
 
 def get_available_acquisitions(dataset_root):
@@ -46,71 +72,106 @@ def get_available_acquisitions(dataset_root):
     ])
 
 
-def prepare_dataset_for_processing(original_dataset_root, processing_mode, selected_acquisition):
-    original_dataset_root = Path(original_dataset_root)
+def prepare_dataset_for_processing(dataset_root, mode, selected_acquisition):
+    dataset_root = Path(dataset_root)
 
-    if processing_mode == "All acquisitions":
-        return original_dataset_root
+    if mode == "All acquisitions":
+        return dataset_root
 
     if not selected_acquisition:
         raise ValueError("No acquisition selected.")
 
-    if TEMP_DATASET_ROOT.exists():
-        shutil.rmtree(TEMP_DATASET_ROOT)
+    if TEMP_SELECTED_DATASET.exists():
+        shutil.rmtree(TEMP_SELECTED_DATASET)
 
-    TEMP_DATASET_ROOT.mkdir(parents=True, exist_ok=True)
+    TEMP_SELECTED_DATASET.mkdir(parents=True, exist_ok=True)
 
-    src = original_dataset_root / selected_acquisition
-    dst = TEMP_DATASET_ROOT / selected_acquisition
+    src = dataset_root / selected_acquisition
+    dst = TEMP_SELECTED_DATASET / selected_acquisition
 
     if not src.exists():
         raise FileNotFoundError(f"Selected acquisition not found: {src}")
 
     shutil.copytree(src, dst)
-    return TEMP_DATASET_ROOT
+
+    return TEMP_SELECTED_DATASET
 
 
-config = load_config()
+st.subheader("1. Upload dataset")
+
+uploaded_zip = st.file_uploader(
+    "Upload dataset ZIP",
+    type=["zip"],
+    help="Carica uno ZIP contenente la cartella dataset con le acquisizioni hyperspectral."
+)
 
 if "dataset_root" not in st.session_state:
-    st.session_state.dataset_root = config.get("dataset_root", "")
+    st.session_state.dataset_root = None
 
 if "output_dir" not in st.session_state:
-    st.session_state.output_dir = config.get("output_dir", "outputs")
+    st.session_state.output_dir = None
+
+if uploaded_zip is not None:
+    if st.button("Extract dataset"):
+        work_dir = Path(tempfile.mkdtemp())
+        zip_path = work_dir / "dataset.zip"
+
+        with open(zip_path, "wb") as f:
+            f.write(uploaded_zip.getbuffer())
+
+        extract_dir = work_dir / "dataset"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall(extract_dir)
+
+        detected_root = find_dataset_root(extract_dir)
+
+        if detected_root is None:
+            st.error("Dataset non valido: non trovo cartelle con capture/ e results/.")
+            st.stop()
+
+        output_dir = work_dir / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        st.session_state.dataset_root = detected_root
+        st.session_state.output_dir = output_dir
+
+        st.success("Dataset estratto correttamente.")
+        st.write("Dataset root:")
+        st.code(str(detected_root))
+        st.write("Output directory:")
+        st.code(str(output_dir))
 
 
-st.subheader("Dataset settings")
+dataset_root = st.session_state.dataset_root
+output_dir = st.session_state.output_dir
 
-col_ds1, col_ds2 = st.columns([1, 3])
+if dataset_root is None:
+    st.info("Carica uno ZIP e clicca 'Extract dataset' per iniziare.")
+    st.stop()
 
-with col_ds1:
-    if st.button("Select dataset folder"):
-        folder = select_folder()
-        if folder:
-            st.session_state.dataset_root = folder
-
-with col_ds2:
-    st.write("Selected dataset folder:")
-    st.code(st.session_state.dataset_root if st.session_state.dataset_root else "No folder selected")
-
-col_out1, col_out2 = st.columns([1, 3])
-
-with col_out1:
-    if st.button("Select output folder"):
-        folder = select_folder()
-        if folder:
-            st.session_state.output_dir = folder
-
-with col_out2:
-    st.write("Selected output folder:")
-    st.code(st.session_state.output_dir)
-
-dataset_root = Path(st.session_state.dataset_root) if st.session_state.dataset_root else None
-output_dir = Path(st.session_state.output_dir)
+dataset_root = Path(dataset_root)
+output_dir = Path(output_dir)
 
 available_acquisitions = get_available_acquisitions(dataset_root)
 
-st.subheader("Processing mode")
+st.subheader("2. Dataset check")
+
+if available_acquisitions:
+    st.success(f"Acquisizioni trovate: {len(available_acquisitions)}")
+    for acq in available_acquisitions:
+        st.write(f"- {acq}")
+else:
+    st.error("Nessuna acquisizione valida trovata.")
+    st.stop()
+
+
+# ============================================================
+# PROCESSING MODE
+# ============================================================
+
+st.subheader("3. Processing mode")
 
 processing_mode = st.radio(
     "Choose what to process",
@@ -121,51 +182,15 @@ processing_mode = st.radio(
 selected_acquisition = None
 
 if processing_mode == "Single acquisition":
-    if available_acquisitions:
-        selected_acquisition = st.selectbox("Select acquisition", available_acquisitions)
-    else:
-        st.warning("No valid acquisitions found in the selected dataset folder.")
+    selected_acquisition = st.selectbox(
+        "Select acquisition",
+        available_acquisitions
+    )
 
-col_save, col_check = st.columns(2)
 
-with col_save:
-    if st.button("Save settings"):
-        if dataset_root is None:
-            st.error("Select a dataset folder first.")
-        else:
-            config["dataset_root"] = str(dataset_root)
-            config["output_dir"] = str(output_dir)
-            config["expected_folders"] = ["capture", "results", "metadata"]
-            config["processing_mode_ui"] = {
-                "mode": processing_mode,
-                "selected_acquisition": selected_acquisition,
-                "note": (
-                    "The pipeline scripts still process all folders in dataset_root. "
-                    "For single acquisition, app.py creates a temporary dataset folder."
-                )
-            }
-            save_config(config)
-            st.success("Config updated.")
-
-with col_check:
-    if st.button("Check dataset folder"):
-        if dataset_root is None or not dataset_root.exists():
-            st.error(f"Dataset root not found: {dataset_root}")
-        else:
-            acquisitions = sorted([p for p in dataset_root.iterdir() if p.is_dir()])
-            st.success(f"Dataset found. Acquisitions detected: {len(acquisitions)}")
-
-            for acq_dir in acquisitions:
-                capture_ok = (acq_dir / "capture").exists()
-                results_ok = (acq_dir / "results").exists()
-                metadata_ok = (acq_dir / "metadata").exists()
-
-                status = "OK" if capture_ok and results_ok and metadata_ok else "MISSING"
-                st.write(
-                    f"- {acq_dir.name}: {status} "
-                    f"(capture={capture_ok}, results={results_ok}, metadata={metadata_ok})"
-                )
-
+# ============================================================
+# PIPELINE
+# ============================================================
 
 steps = {
     "01 - Inspect dataset": "01_inspect_dataset.py",
@@ -179,41 +204,29 @@ steps = {
 }
 
 
-def save_current_settings_or_stop():
-    if dataset_root is None:
-        st.error("Select a dataset folder first.")
-        st.stop()
-
-    if not dataset_root.exists():
-        st.error(f"Dataset folder does not exist: {dataset_root}")
-        st.stop()
-
-    if processing_mode == "Single acquisition" and not selected_acquisition:
-        st.error("Select an acquisition first.")
-        st.stop()
-
+def save_current_config_or_stop():
     try:
-        processing_dataset_root = prepare_dataset_for_processing(
-            original_dataset_root=dataset_root,
-            processing_mode=processing_mode,
+        effective_dataset_root = prepare_dataset_for_processing(
+            dataset_root=dataset_root,
+            mode=processing_mode,
             selected_acquisition=selected_acquisition,
         )
     except Exception as e:
         st.error(str(e))
         st.stop()
 
-    config["dataset_root"] = str(processing_dataset_root)
+    config["dataset_root"] = str(effective_dataset_root)
     config["output_dir"] = str(output_dir)
     config["expected_folders"] = ["capture", "results", "metadata"]
     config["processing_mode_ui"] = {
         "mode": processing_mode,
-        "original_dataset_root": str(dataset_root),
-        "effective_dataset_root": str(processing_dataset_root),
         "selected_acquisition": selected_acquisition,
+        "effective_dataset_root": str(effective_dataset_root),
     }
 
     save_config(config)
-    st.info(f"Effective dataset root: {processing_dataset_root}")
+
+    return effective_dataset_root
 
 
 def run_script(script):
@@ -233,14 +246,14 @@ def run_script(script):
     return True
 
 
-st.divider()
-st.subheader("Run pipeline")
+st.subheader("4. Run pipeline")
 
 col1, col2 = st.columns(2)
 
 with col1:
     if st.button("Run full pipeline"):
-        save_current_settings_or_stop()
+        effective_root = save_current_config_or_stop()
+        st.info(f"Effective dataset root: {effective_root}")
 
         for name, script in steps.items():
             st.write(f"Running {name}")
@@ -252,12 +265,17 @@ with col2:
     selected_step = st.selectbox("Run single step", list(steps.keys()))
 
     if st.button("Run selected step"):
-        save_current_settings_or_stop()
+        effective_root = save_current_config_or_stop()
+        st.info(f"Effective dataset root: {effective_root}")
         run_script(steps[selected_step])
 
 
+# ============================================================
+# RESULTS PREVIEW
+# ============================================================
+
 st.divider()
-st.subheader("Results preview")
+st.subheader("5. Results preview")
 
 acq_root = output_dir / "07_extracted_plant_pixels"
 result_acquisitions = sorted([p.name for p in acq_root.iterdir() if p.is_dir()]) if acq_root.exists() else []
@@ -274,20 +292,14 @@ if result_acquisitions:
     with col_a:
         if pseudo_rgb.exists():
             st.image(str(pseudo_rgb), caption="Pseudo RGB")
-        else:
-            st.info("Pseudo RGB not available.")
 
     with col_b:
         if mask_overlay.exists():
             st.image(str(mask_overlay), caption="Plant mask overlay")
-        else:
-            st.info("Plant mask overlay not available.")
 
     with col_c:
         if spectral_png.exists():
             st.image(str(spectral_png), caption="Spectral signature")
-        else:
-            st.info("Spectral signature not available.")
 
     st.subheader("Download")
 
