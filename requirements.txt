@@ -1,0 +1,6 @@
+streamlit
+numpy<2
+pandas
+matplotlib
+pyyaml
+scikit-image
