@@ -280,44 +280,39 @@ def qc_cube_summary(cube, wavelengths, metadata, dat_path, hdr_path):
     return summary
 
 
-def save_reflectance_histogram(cube, summary, output_path, acquisition_id):
+def save_reflectance_histogram(cube, output_path, title, acquisition_id):
     """
-    Salva un istogramma robusto della distribuzione della reflectance.
-    Il range è limitato a 0–2.5 per visualizzare la distribuzione reale,
-    senza farsi dominare dagli outlier estremi tipo ±1e38.
-    """
-    finite_values = cube[np.isfinite(cube)]
+    Salva un istogramma robusto della riflettanza.
 
-    if finite_values.size == 0:
+    Per evitare crash dovuti a outlier estremi tipo +/-1e38,
+    l'istogramma viene calcolato solo su un range diagnostico stabile.
+    """
+    values = cube[np.isfinite(cube)]
+
+    if values.size == 0:
+        print(f"{acquisition_id}: nessun valore finito per istogramma.")
         return
 
-    finite_values = finite_values.astype(np.float64)
+    # Range diagnostico stabile per reflectance
+    values = values[(values >= -0.5) & (values <= 3.0)]
+
+    if values.size == 0:
+        print(f"{acquisition_id}: nessun valore nel range istogramma.")
+        return
+
+    # Campionamento per alleggerire Streamlit Cloud
+    max_points = 1_000_000
+    if values.size > max_points:
+        rng = np.random.default_rng(42)
+        values = rng.choice(values, size=max_points, replace=False)
 
     plt.figure(figsize=(9, 5))
-
-    plt.hist(
-        finite_values,
-        bins=300,
-        range=(0, 2.5),
-        log=True
-    )
-
-    if summary.get("global_p50") is not None:
-        plt.axvline(summary["global_p50"], linestyle="--", label="p50 / median")
-
-    if summary.get("global_p95") is not None:
-        plt.axvline(summary["global_p95"], linestyle="--", label="p95")
-
-    if summary.get("global_p99") is not None:
-        plt.axvline(summary["global_p99"], linestyle="--", label="p99")
-
-    plt.axvline(1.0, linestyle=":", label="Reflectance = 1")
-    plt.axvline(1.5, linestyle=":", label="QC threshold = 1.5")
+    plt.hist(values, bins=300, log=True)
 
     plt.xlabel("Reflectance")
-    plt.ylabel("Count (log scale)")
-    plt.title(f"{acquisition_id} - Reflectance distribution")
-    plt.legend()
+    plt.ylabel("Frequency log scale")
+    plt.title(title)
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()
