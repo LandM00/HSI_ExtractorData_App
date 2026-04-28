@@ -113,7 +113,6 @@ def load_envi_cube(dat_path, hdr_path):
     interleave = metadata.get("interleave", "").lower()
 
     dtype = envi_dtype(data_type)
-
     expected_values = samples * lines * bands
 
     arr = np.fromfile(
@@ -156,15 +155,29 @@ def find_acquisition_files(acquisition_dir):
     capture_dir = acquisition_dir / "capture"
     results_dir = acquisition_dir / "results"
 
+    dark_raws = sorted(capture_dir.glob("DARKREF_*.raw"))
+    dark_hdrs = sorted(capture_dir.glob("DARKREF_*.hdr"))
+    white_raws = sorted(capture_dir.glob("WHITEREF_*.raw"))
+    white_hdrs = sorted(capture_dir.glob("WHITEREF_*.hdr"))
+    reflectance_dats = sorted(results_dir.glob("REFLECTANCE_*.dat"))
+    reflectance_hdrs = sorted(results_dir.glob("REFLECTANCE_*.hdr"))
+
+    if not dark_raws or not dark_hdrs:
+        raise FileNotFoundError(f"{acquisition_id}: DARKREF mancante")
+    if not white_raws or not white_hdrs:
+        raise FileNotFoundError(f"{acquisition_id}: WHITEREF mancante")
+    if not reflectance_dats or not reflectance_hdrs:
+        raise FileNotFoundError(f"{acquisition_id}: REFLECTANCE mancante")
+
     files = {
         "raw_dat": capture_dir / f"{acquisition_id}.raw",
         "raw_hdr": capture_dir / f"{acquisition_id}.hdr",
-        "dark_dat": sorted(capture_dir.glob("DARKREF_*.raw"))[0],
-        "dark_hdr": sorted(capture_dir.glob("DARKREF_*.hdr"))[0],
-        "white_dat": sorted(capture_dir.glob("WHITEREF_*.raw"))[0],
-        "white_hdr": sorted(capture_dir.glob("WHITEREF_*.hdr"))[0],
-        "reflectance_dat": sorted(results_dir.glob("REFLECTANCE_*.dat"))[0],
-        "reflectance_hdr": sorted(results_dir.glob("REFLECTANCE_*.hdr"))[0],
+        "dark_dat": dark_raws[0],
+        "dark_hdr": dark_hdrs[0],
+        "white_dat": white_raws[0],
+        "white_hdr": white_hdrs[0],
+        "reflectance_dat": reflectance_dats[0],
+        "reflectance_hdr": reflectance_hdrs[0],
     }
 
     for key, path in files.items():
@@ -209,8 +222,6 @@ def band_qc_report(
     reflectance,
     denominator,
     wavelengths,
-    min_wavelength_nm,
-    max_wavelength_nm,
     min_reflectance,
     max_reflectance,
     min_pct_valid_reflectance,
@@ -247,15 +258,12 @@ def band_qc_report(
         else:
             den_min = den_p01 = den_median = den_p99 = den_max = None
 
-        wavelength_ok = min_wavelength_nm <= wl <= max_wavelength_nm
         reflectance_ok = pct_valid_refl >= min_pct_valid_reflectance
         denominator_ok = den_median is not None and den_median >= min_denominator_median
 
-        include_band = wavelength_ok and reflectance_ok and denominator_ok
+        include_band = reflectance_ok and denominator_ok
 
         reasons = []
-        if not wavelength_ok:
-            reasons.append("outside_wavelength_range")
         if not reflectance_ok:
             reasons.append("too_many_invalid_reflectance_values")
         if not denominator_ok:
@@ -293,7 +301,6 @@ def band_qc_report(
             "denominator_p99": den_p99,
             "denominator_max": den_max,
 
-            "wavelength_ok": wavelength_ok,
             "reflectance_ok": reflectance_ok,
             "denominator_ok": denominator_ok,
             "include_band": include_band,
@@ -303,10 +310,10 @@ def band_qc_report(
     return records
 
 
-def compare_software_vs_recalculated(software, recalculated, valid_band_indices, wavelengths):
+def compare_software_vs_recalculated(software, recalculated, band_indices, wavelengths):
     records = []
 
-    for b in valid_band_indices:
+    for b in band_indices:
         sw = software[:, :, b]
         rc = recalculated[:, :, b]
 
@@ -359,7 +366,6 @@ def make_radiometric_validity_mask(
 
 def decide_status(
     n_valid_bands,
-    n_total_bands,
     pct_valid_pixels,
     median_band_abs_diff,
     fail_min_valid_bands,
@@ -426,9 +432,6 @@ def main():
 
     qc_cfg = config.get("radiometric_qc", {})
 
-    min_wavelength_nm = qc_cfg.get("min_wavelength_nm", 420)
-    max_wavelength_nm = qc_cfg.get("max_wavelength_nm", 950)
-
     min_reflectance = qc_cfg.get("min_reflectance", 0.0)
     max_reflectance = qc_cfg.get("max_reflectance", 1.5)
 
@@ -448,7 +451,7 @@ def main():
 
     for acquisition_dir in acquisitions:
         acquisition_id = acquisition_dir.name
-        print(f"\nStep 04 definitivo - QC radiometrico: {acquisition_id}")
+        print(f"\nStep 04 - QC radiometrico senza filtro wavelength: {acquisition_id}")
 
         out_dir = output_root / acquisition_id
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -479,8 +482,6 @@ def main():
             reflectance=software_reflectance,
             denominator=denominator,
             wavelengths=wavelengths_ref,
-            min_wavelength_nm=min_wavelength_nm,
-            max_wavelength_nm=max_wavelength_nm,
             min_reflectance=min_reflectance,
             max_reflectance=max_reflectance,
             min_pct_valid_reflectance=min_pct_valid_reflectance,
@@ -492,7 +493,7 @@ def main():
         valid_band_indices = [int(r["band_index"]) for r in valid_bands]
 
         if len(valid_band_indices) == 0:
-            raise RuntimeError(f"{acquisition_id}: nessuna banda valida.")
+            raise RuntimeError(f"{acquisition_id}: nessuna banda valida secondo QC radiometrico.")
 
         validity_mask = make_radiometric_validity_mask(
             reflectance=software_reflectance,
@@ -506,7 +507,7 @@ def main():
         comparison_records = compare_software_vs_recalculated(
             software=software_reflectance,
             recalculated=recalculated_reflectance,
-            valid_band_indices=valid_band_indices,
+            band_indices=valid_band_indices,
             wavelengths=wavelengths_ref,
         )
 
@@ -521,7 +522,6 @@ def main():
 
         status, status_reasons = decide_status(
             n_valid_bands=len(valid_band_indices),
-            n_total_bands=software_reflectance.shape[2],
             pct_valid_pixels=pct_valid_pixels,
             median_band_abs_diff=median_band_abs_diff,
             fail_min_valid_bands=fail_min_valid_bands,
@@ -547,8 +547,7 @@ def main():
             "status_reasons": status_reasons,
 
             "criteria": {
-                "min_wavelength_nm": min_wavelength_nm,
-                "max_wavelength_nm": max_wavelength_nm,
+                "wavelength_filter_used": False,
                 "min_reflectance": min_reflectance,
                 "max_reflectance": max_reflectance,
                 "min_pct_valid_reflectance": min_pct_valid_reflectance,
@@ -581,9 +580,9 @@ def main():
 
         print(f"Status: {status}")
         print(f"Reason: {status_reasons}")
-        print(f"Bande valide: {len(valid_band_indices)} / {software_reflectance.shape[2]}")
+        print(f"Bande valide QC: {len(valid_band_indices)} / {software_reflectance.shape[2]}")
         print(
-            f"Range valido: "
+            f"Range bande valide QC: "
             f"{wavelengths_ref[valid_band_indices[0]]:.2f} - "
             f"{wavelengths_ref[valid_band_indices[-1]]:.2f} nm"
         )
@@ -599,7 +598,7 @@ def main():
         output_root / "global_radiometric_calibration_qc_summary.json",
     )
 
-    print("\nStep 04 definitivo completato.")
+    print("\nStep 04 completato.")
     print(f"Output salvati in: {output_root}")
 
 

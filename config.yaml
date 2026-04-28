@@ -1,15 +1,11 @@
-dataset_root: _temp_selected_dataset
-output_dir: C:\Users\matte\OneDrive\Desktop\ProvePython\HSI_Padova\Hyperspectral_pipeline\outputs
+dataset_root: C:\Users\matte\AppData\Local\Temp\tmpbq09icyd\_temp_selected_dataset
+output_dir: C:\Users\matte\AppData\Local\Temp\tmpbq09icyd\outputs
 expected_folders:
 - capture
 - results
 - metadata
-manual_white_rois:
-  2025-05-30_050: null
-  2025-05-30_057: null
+manual_white_rois: {}
 radiometric_qc:
-  min_wavelength_nm: 420
-  max_wavelength_nm: 950
   min_reflectance: 0.0
   max_reflectance: 1.5
   min_pct_valid_reflectance: 95.0
@@ -20,15 +16,25 @@ radiometric_qc:
   warning_min_valid_pixels_pct: 80.0
   max_allowed_median_abs_diff: 1.0e-05
 segmentation:
-  method: ndvi_otsu
+  method: ndvi_exg_otsu
   ndvi_min_threshold: 0.2
   ndvi_max_threshold: 0.75
+  use_exg: true
+  exg_min_threshold: 0.05
+  use_green_dominance: true
+  green_margin: 0.02
   min_object_size_px: 300
   min_hole_size_px: 300
-  erosion_radius_px: 1
+  opening_radius_px: 1
+  closing_radius_px: 2
+  erosion_radius_px: 0
   remove_border_objects: false
+  keep_largest_n_components: 2
+cleaning:
+  method: value_range_to_nan
+  min_reflectance: 0.0
+  max_reflectance: 1.5
 processing_mode_ui:
   mode: Single acquisition
-  original_dataset_root: C:\Users\matte\OneDrive\Desktop\ProvePython\HSI_Padova\Hyperspectral_pipeline\Spinacio
-  effective_dataset_root: _temp_selected_dataset
-  selected_acquisition: 2025-05-30_050
+  selected_acquisition: 2025-09-09_063
+  effective_dataset_root: C:\Users\matte\AppData\Local\Temp\tmpbq09icyd\_temp_selected_dataset

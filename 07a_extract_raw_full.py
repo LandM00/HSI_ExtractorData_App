@@ -160,15 +160,6 @@ def save_mean_spectrum_csv(wavelengths, mean_spectrum, std_spectrum, output_path
 
 
 def save_pixel_matrix_csv_gz(spectra, rows, cols, wavelengths, output_path):
-    """
-    Esporta la matrice pixel x lunghezze d'onda in CSV compresso.
-
-    Righe = pixel.
-    Colonne = pixel_id, row, col, wl_XXXnm...
-    Valori = reflectance calibrata originale, estratta solo dai pixel pianta validi.
-
-    Il .csv.gz è compresso lossless ed è leggibile in R/Python.
-    """
     df = pd.DataFrame(
         spectra.astype(np.float32),
         columns=[f"wl_{float(wl):.2f}nm" for wl in wavelengths]
@@ -196,7 +187,6 @@ def main():
     dataset_root = Path(config["dataset_root"])
     output_root = Path(config["output_dir"])
 
-    step04_root = output_root / "04_radiometric_calibration_qc"
     step06_root = output_root / "06_plant_segmentation"
     step07_root = output_root / "07_extracted_plant_pixels"
     step07_root.mkdir(parents=True, exist_ok=True)
@@ -206,7 +196,7 @@ def main():
 
     for acquisition_dir in acquisitions:
         acquisition_id = acquisition_dir.name
-        print(f"\nStep 07 - estrazione pixel pianta: {acquisition_id}")
+        print(f"\nStep 07a - estrazione RAW_FULL pixel pianta: {acquisition_id}")
 
         out_dir = step07_root / acquisition_id
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -214,23 +204,11 @@ def main():
         hdr_path = sorted((acquisition_dir / "results").glob("REFLECTANCE_*.hdr"))[0]
         dat_path = sorted((acquisition_dir / "results").glob("REFLECTANCE_*.dat"))[0]
 
-        valid_band_indices_path = step04_root / acquisition_id / "valid_band_indices.npy"
-        valid_wavelengths_path = step04_root / acquisition_id / "valid_wavelengths_nm.npy"
-        radiometric_mask_path = step04_root / acquisition_id / "radiometric_validity_mask.npy"
         plant_mask_path = step06_root / acquisition_id / "plant_mask_clean.npy"
 
-        for p in [
-            valid_band_indices_path,
-            valid_wavelengths_path,
-            radiometric_mask_path,
-            plant_mask_path,
-        ]:
-            if not p.exists():
-                raise FileNotFoundError(f"File mancante: {p}")
+        if not plant_mask_path.exists():
+            raise FileNotFoundError(f"File mancante: {plant_mask_path}")
 
-        valid_band_indices = np.load(valid_band_indices_path)
-        valid_wavelengths = np.load(valid_wavelengths_path)
-        radiometric_mask = np.load(radiometric_mask_path)
         plant_mask = np.load(plant_mask_path)
 
         cube, wavelengths, metadata = load_envi_cube(dat_path, hdr_path)
@@ -240,65 +218,65 @@ def main():
                 f"Shape cubo {cube.shape[:2]} diversa da plant mask {plant_mask.shape}"
             )
 
-        if cube.shape[:2] != radiometric_mask.shape:
-            raise ValueError(
-                f"Shape cubo {cube.shape[:2]} diversa da radiometric mask {radiometric_mask.shape}"
-            )
-
-        final_mask = plant_mask.astype(bool) & radiometric_mask.astype(bool)
-
+        final_mask = plant_mask.astype(bool)
         rows, cols = np.where(final_mask)
 
         if rows.size == 0:
-            raise RuntimeError(f"{acquisition_id}: nessun pixel valido da estrarre.")
+            raise RuntimeError(f"{acquisition_id}: nessun pixel pianta da estrarre.")
 
-        subcube = cube[:, :, valid_band_indices]
-        spectra = subcube[rows, cols, :]
+        spectra_raw_full = cube[rows, cols, :].astype(np.float32)
 
-        finite_spectra_mask = np.all(np.isfinite(spectra), axis=1)
-        spectra = spectra[finite_spectra_mask]
-        rows = rows[finite_spectra_mask]
-        cols = cols[finite_spectra_mask]
-
-        spectra = spectra.astype(np.float32)
         rows = rows.astype(np.int32)
         cols = cols.astype(np.int32)
-        valid_wavelengths = valid_wavelengths.astype(np.float32)
-        valid_band_indices = valid_band_indices.astype(np.int32)
+        wavelengths = wavelengths.astype(np.float32)
 
+        n_pixels = int(spectra_raw_full.shape[0])
+        n_bands = int(spectra_raw_full.shape[1])
+        n_values = int(spectra_raw_full.size)
+
+        n_finite_values = int(np.isfinite(spectra_raw_full).sum())
+        n_nan_values = int(np.isnan(spectra_raw_full).sum())
+        n_inf_values = int(np.isinf(spectra_raw_full).sum())
+
+        pct_finite_values = float(100 * n_finite_values / n_values)
+        pct_nan_values = float(100 * n_nan_values / n_values)
+        pct_inf_values = float(100 * n_inf_values / n_values)
+
+        # ------------------------------------------------------------
+        # Save RAW_FULL outputs
+        # ------------------------------------------------------------
         np.savez_compressed(
-            out_dir / "plant_pixel_spectra.npz",
-            spectra=spectra,
+            out_dir / "plant_pixel_spectra_RAW_FULL.npz",
+            spectra=spectra_raw_full,
             rows=rows,
             cols=cols,
-            wavelengths_nm=valid_wavelengths,
-            valid_band_indices=valid_band_indices,
+            wavelengths_nm=wavelengths,
         )
 
         save_pixel_matrix_csv_gz(
-            spectra=spectra,
+            spectra=spectra_raw_full,
             rows=rows,
             cols=cols,
-            wavelengths=valid_wavelengths,
-            output_path=out_dir / "plant_pixel_matrix.csv.gz",
+            wavelengths=wavelengths,
+            output_path=out_dir / "plant_pixel_matrix_RAW_FULL.csv.gz",
         )
-
-        np.save(out_dir / "final_extraction_mask.npy", final_mask)
 
         save_coordinates_csv(
             rows=rows,
             cols=cols,
-            output_path=out_dir / "plant_pixel_coordinates.csv",
+            output_path=out_dir / "plant_pixel_coordinates_RAW_FULL.csv",
         )
 
-        mean_spectrum = np.nanmean(spectra, axis=0)
-        std_spectrum = np.nanstd(spectra, axis=0)
+        np.save(out_dir / "final_plant_mask.npy", final_mask)
+
+        mean_spectrum_raw = np.nanmean(spectra_raw_full, axis=0)
+        std_spectrum_raw = np.nanstd(spectra_raw_full, axis=0)
 
         save_mean_spectrum_csv(
-            wavelengths=valid_wavelengths,
-            mean_spectrum=mean_spectrum,
-            std_spectrum=std_spectrum,
-            output_path=out_dir / "plant_mean_spectrum.csv",
+            wavelengths=wavelengths,
+            mean_spectrum=mean_spectrum_raw,
+            std_spectrum=std_spectrum_raw,
+            output_path=out_dir / "plant_mean_spectrum_RAW_FULL.csv",
         )
 
         summary = {
@@ -307,45 +285,55 @@ def main():
 
             "input_reflectance_dat": str(dat_path),
             "input_reflectance_hdr": str(hdr_path),
+            "input_plant_mask": str(plant_mask_path),
 
-            "n_total_pixels": int(final_mask.size),
-            "n_plant_mask_pixels": int(plant_mask.sum()),
-            "n_radiometrically_valid_pixels": int(radiometric_mask.sum()),
-            "n_final_extracted_pixels_before_finite_filter": int(final_mask.sum()),
-            "n_final_extracted_pixels": int(spectra.shape[0]),
+            "n_total_image_pixels": int(final_mask.size),
+            "n_plant_pixels": n_pixels,
+            "pct_plant_pixels": float(100 * n_pixels / final_mask.size),
 
-            "n_valid_bands": int(len(valid_band_indices)),
-            "first_wavelength_nm": float(valid_wavelengths[0]),
-            "last_wavelength_nm": float(valid_wavelengths[-1]),
+            "n_original_bands": n_bands,
+            "first_wavelength_nm": float(wavelengths[0]),
+            "last_wavelength_nm": float(wavelengths[-1]),
+
+            "raw_full": {
+                "description": (
+                    "All plant pixels and all original spectral bands. "
+                    "No wavelength filtering and no value cleaning applied."
+                ),
+                "n_pixels": n_pixels,
+                "n_bands": n_bands,
+                "n_values": n_values,
+                "n_finite_values": n_finite_values,
+                "n_nan_values": n_nan_values,
+                "n_inf_values": n_inf_values,
+                "pct_finite_values": pct_finite_values,
+                "pct_nan_values": pct_nan_values,
+                "pct_inf_values": pct_inf_values,
+            },
 
             "outputs": {
-                "plant_pixel_spectra_npz": str(out_dir / "plant_pixel_spectra.npz"),
-                "plant_pixel_matrix_csv_gz": str(out_dir / "plant_pixel_matrix.csv.gz"),
-                "final_extraction_mask_npy": str(out_dir / "final_extraction_mask.npy"),
-                "plant_pixel_coordinates_csv": str(out_dir / "plant_pixel_coordinates.csv"),
-                "plant_mean_spectrum_csv": str(out_dir / "plant_mean_spectrum.csv"),
+                "plant_pixel_spectra_RAW_FULL_npz": str(out_dir / "plant_pixel_spectra_RAW_FULL.npz"),
+                "plant_pixel_matrix_RAW_FULL_csv_gz": str(out_dir / "plant_pixel_matrix_RAW_FULL.csv.gz"),
+                "plant_pixel_coordinates_RAW_FULL_csv": str(out_dir / "plant_pixel_coordinates_RAW_FULL.csv"),
+                "plant_mean_spectrum_RAW_FULL_csv": str(out_dir / "plant_mean_spectrum_RAW_FULL.csv"),
+                "final_plant_mask_npy": str(out_dir / "final_plant_mask.npy"),
             },
 
             "note": (
-                "Spectra were extracted from the original calibrated REFLECTANCE cube. "
-                "Masks were used only to select plant pixels and radiometrically valid pixels. "
-                "NPZ is the primary scientific binary format; CSV.GZ is a lossless-compressed "
-                "tabular export for R/Python/statistical software."
+                "This step extracts RAW_FULL spectra only. CLEAN datasets are generated "
+                "in the next step from RAW_FULL, using thresholds defined in config.yaml."
             )
         }
 
-        save_json(summary, out_dir / "extraction_summary.json")
+        save_json(summary, out_dir / "extraction_raw_full_summary.json")
         global_summary.append(summary)
 
-        print(f"Pixel pianta mask: {summary['n_plant_mask_pixels']}")
-        print(f"Pixel finali estratti: {summary['n_final_extracted_pixels']}")
-        print(f"Bande estratte: {summary['n_valid_bands']}")
-        print(
-            f"Range spettrale: "
-            f"{summary['first_wavelength_nm']:.2f} - {summary['last_wavelength_nm']:.2f} nm"
-        )
-        print(f"NPZ: {out_dir / 'plant_pixel_spectra.npz'}")
-        print(f"CSV.GZ: {out_dir / 'plant_pixel_matrix.csv.gz'}")
+        print(f"Pixel pianta RAW_FULL: {n_pixels}")
+        print(f"Bande originali salvate: {n_bands}")
+        print(f"Range spettrale: {wavelengths[0]:.2f} - {wavelengths[-1]:.2f} nm")
+        print(f"Valori finiti: {pct_finite_values:.4f}%")
+        print(f"RAW_FULL NPZ: {out_dir / 'plant_pixel_spectra_RAW_FULL.npz'}")
+        print(f"RAW_FULL CSV.GZ: {out_dir / 'plant_pixel_matrix_RAW_FULL.csv.gz'}")
         print(f"Output salvati in: {out_dir}")
 
     save_json(
@@ -354,10 +342,10 @@ def main():
             "n_acquisitions": len(global_summary),
             "summaries": global_summary,
         },
-        step07_root / "global_extraction_summary.json",
+        step07_root / "global_extraction_raw_full_summary.json",
     )
 
-    print("\nStep 07 completato.")
+    print("\nStep 07a completato.")
     print(f"Output salvati in: {step07_root}")
 
 

@@ -3,21 +3,14 @@ import json
 import csv
 import yaml
 import numpy as np
+import matplotlib.pyplot as plt
 from datetime import datetime
 
-
-# -------------------------
-# CONFIG
-# -------------------------
 
 def load_config(config_path="config.yaml"):
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-
-# -------------------------
-# ENVI HEADER PARSER
-# -------------------------
 
 def parse_envi_header(hdr_path):
     hdr_path = Path(hdr_path)
@@ -84,17 +77,7 @@ def to_int(value):
         return None
 
 
-# -------------------------
-# ENVI DATA LOADING
-# -------------------------
-
 def envi_dtype(data_type):
-    """
-    ENVI data type mapping.
-    Qui ci serve soprattutto:
-    4  = float32
-    12 = uint16
-    """
     mapping = {
         1: np.uint8,
         2: np.int16,
@@ -114,12 +97,6 @@ def envi_dtype(data_type):
 
 
 def load_envi_cube(dat_path, hdr_path):
-    """
-    Carica un cubo ENVI e restituisce array con shape:
-    (lines, samples, bands)
-
-    Supporta BIL, BSQ, BIP.
-    """
     dat_path = Path(dat_path)
     hdr_path = Path(hdr_path)
 
@@ -133,7 +110,6 @@ def load_envi_cube(dat_path, hdr_path):
     interleave = metadata.get("interleave", "").lower()
 
     dtype = envi_dtype(data_type)
-
     expected_values = samples * lines * bands
 
     arr = np.fromfile(
@@ -150,19 +126,13 @@ def load_envi_cube(dat_path, hdr_path):
         )
 
     if interleave == "bil":
-        # ENVI BIL: lines, bands, samples
         cube = arr.reshape((lines, bands, samples))
         cube = np.transpose(cube, (0, 2, 1))
-
     elif interleave == "bsq":
-        # ENVI BSQ: bands, lines, samples
         cube = arr.reshape((bands, lines, samples))
         cube = np.transpose(cube, (1, 2, 0))
-
     elif interleave == "bip":
-        # ENVI BIP: lines, samples, bands
         cube = arr.reshape((lines, samples, bands))
-
     else:
         raise ValueError(f"Interleave non supportato: {interleave}")
 
@@ -171,14 +141,7 @@ def load_envi_cube(dat_path, hdr_path):
     return cube, wavelengths, metadata
 
 
-# -------------------------
-# QC
-# -------------------------
-
 def qc_band_statistics(cube, wavelengths):
-    """
-    Calcola statistiche per banda senza modificare i dati.
-    """
     records = []
 
     n_lines, n_samples, n_bands = cube.shape
@@ -193,8 +156,11 @@ def qc_band_statistics(cube, wavelengths):
         n_finite = int(finite_mask.sum())
         n_nan = int(np.isnan(band).sum())
         n_inf = int(np.isinf(band).sum())
+
         n_negative = int((band < 0).sum())
         n_gt_1 = int((band > 1).sum())
+        n_gt_1_5 = int((band > 1.5).sum())
+        n_gt_10 = int((band > 10).sum())
         n_gt_100 = int((band > 100).sum())
 
         if finite_values.size > 0:
@@ -204,13 +170,14 @@ def qc_band_statistics(cube, wavelengths):
             median_val = float(np.median(finite_values))
             p01 = float(np.percentile(finite_values, 1))
             p05 = float(np.percentile(finite_values, 5))
+            p50 = float(np.percentile(finite_values, 50))
             p95 = float(np.percentile(finite_values, 95))
             p99 = float(np.percentile(finite_values, 99))
         else:
             min_val = max_val = mean_val = median_val = None
-            p01 = p05 = p95 = p99 = None
+            p01 = p05 = p50 = p95 = p99 = None
 
-        record = {
+        records.append({
             "band_index": b,
             "wavelength_nm": float(wavelengths[b]) if b < len(wavelengths) else None,
 
@@ -225,23 +192,26 @@ def qc_band_statistics(cube, wavelengths):
 
             "n_negative": n_negative,
             "n_gt_1": n_gt_1,
+            "n_gt_1_5": n_gt_1_5,
+            "n_gt_10": n_gt_10,
             "n_gt_100": n_gt_100,
 
             "pct_negative": 100 * n_negative / n_pixels,
             "pct_gt_1": 100 * n_gt_1 / n_pixels,
+            "pct_gt_1_5": 100 * n_gt_1_5 / n_pixels,
+            "pct_gt_10": 100 * n_gt_10 / n_pixels,
             "pct_gt_100": 100 * n_gt_100 / n_pixels,
 
             "min": min_val,
             "p01": p01,
             "p05": p05,
+            "p50": p50,
             "mean": mean_val,
             "median": median_val,
             "p95": p95,
             "p99": p99,
             "max": max_val,
-        }
-
-        records.append(record)
+        })
 
     return records
 
@@ -250,6 +220,15 @@ def qc_cube_summary(cube, wavelengths, metadata, dat_path, hdr_path):
     finite_mask = np.isfinite(cube)
     finite_values = cube[finite_mask]
 
+    n_total = int(cube.size)
+    n_finite = int(finite_mask.sum())
+
+    n_negative = int((cube < 0).sum())
+    n_gt_1 = int((cube > 1).sum())
+    n_gt_1_5 = int((cube > 1.5).sum())
+    n_gt_10 = int((cube > 10).sum())
+    n_gt_100 = int((cube > 100).sum())
+
     summary = {
         "dat_path": str(dat_path),
         "hdr_path": str(hdr_path),
@@ -257,14 +236,26 @@ def qc_cube_summary(cube, wavelengths, metadata, dat_path, hdr_path):
         "lines": int(cube.shape[0]),
         "samples": int(cube.shape[1]),
         "bands": int(cube.shape[2]),
-        "n_total_values": int(cube.size),
-        "n_finite_values": int(finite_mask.sum()),
-        "pct_finite_values": float(100 * finite_mask.sum() / cube.size),
+
+        "n_total_values": n_total,
+        "n_finite_values": n_finite,
+        "pct_finite_values": float(100 * n_finite / n_total),
+
         "n_nan_values": int(np.isnan(cube).sum()),
         "n_inf_values": int(np.isinf(cube).sum()),
-        "n_negative_values": int((cube < 0).sum()),
-        "n_gt_1_values": int((cube > 1).sum()),
-        "n_gt_100_values": int((cube > 100).sum()),
+
+        "n_negative_values": n_negative,
+        "n_gt_1_values": n_gt_1,
+        "n_gt_1_5_values": n_gt_1_5,
+        "n_gt_10_values": n_gt_10,
+        "n_gt_100_values": n_gt_100,
+
+        "pct_negative_values": float(100 * n_negative / n_total),
+        "pct_gt_1_values": float(100 * n_gt_1 / n_total),
+        "pct_gt_1_5_values": float(100 * n_gt_1_5 / n_total),
+        "pct_gt_10_values": float(100 * n_gt_10 / n_total),
+        "pct_gt_100_values": float(100 * n_gt_100 / n_total),
+
         "wavelength_min_nm": float(np.min(wavelengths)),
         "wavelength_max_nm": float(np.max(wavelengths)),
         "n_wavelengths": int(len(wavelengths)),
@@ -277,8 +268,11 @@ def qc_cube_summary(cube, wavelengths, metadata, dat_path, hdr_path):
         summary.update({
             "global_min": float(np.min(finite_values)),
             "global_p01": float(np.percentile(finite_values, 1)),
+            "global_p05": float(np.percentile(finite_values, 5)),
+            "global_p50": float(np.percentile(finite_values, 50)),
             "global_median": float(np.median(finite_values)),
             "global_mean": float(np.mean(finite_values)),
+            "global_p95": float(np.percentile(finite_values, 95)),
             "global_p99": float(np.percentile(finite_values, 99)),
             "global_max": float(np.max(finite_values)),
         })
@@ -286,9 +280,48 @@ def qc_cube_summary(cube, wavelengths, metadata, dat_path, hdr_path):
     return summary
 
 
-# -------------------------
-# OUTPUT
-# -------------------------
+def save_reflectance_histogram(cube, summary, output_path, acquisition_id):
+    """
+    Salva un istogramma robusto della distribuzione della reflectance.
+    Il range è limitato a 0–2.5 per visualizzare la distribuzione reale,
+    senza farsi dominare dagli outlier estremi tipo ±1e38.
+    """
+    finite_values = cube[np.isfinite(cube)]
+
+    if finite_values.size == 0:
+        return
+
+    finite_values = finite_values.astype(np.float64)
+
+    plt.figure(figsize=(9, 5))
+
+    plt.hist(
+        finite_values,
+        bins=300,
+        range=(0, 2.5),
+        log=True
+    )
+
+    if summary.get("global_p50") is not None:
+        plt.axvline(summary["global_p50"], linestyle="--", label="p50 / median")
+
+    if summary.get("global_p95") is not None:
+        plt.axvline(summary["global_p95"], linestyle="--", label="p95")
+
+    if summary.get("global_p99") is not None:
+        plt.axvline(summary["global_p99"], linestyle="--", label="p99")
+
+    plt.axvline(1.0, linestyle=":", label="Reflectance = 1")
+    plt.axvline(1.5, linestyle=":", label="QC threshold = 1.5")
+
+    plt.xlabel("Reflectance")
+    plt.ylabel("Count (log scale)")
+    plt.title(f"{acquisition_id} - Reflectance distribution")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+
 
 def save_csv(records, output_path):
     keys = list(records[0].keys())
@@ -304,16 +337,15 @@ def save_json(payload, output_path):
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
-# -------------------------
-# MAIN
-# -------------------------
-
 def main():
     config = load_config()
 
     dataset_root = Path(config["dataset_root"])
     output_root = Path(config["output_dir"]) / "03_reflectance_validation"
     output_root.mkdir(parents=True, exist_ok=True)
+
+    if not dataset_root.exists():
+        raise FileNotFoundError(f"Dataset root non trovata: {dataset_root}")
 
     acquisitions = sorted([p for p in dataset_root.iterdir() if p.is_dir()])
 
@@ -359,14 +391,32 @@ def main():
             acquisition_output / "reflectance_cube_summary.json"
         )
 
+        save_reflectance_histogram(
+            cube=cube,
+            summary=summary,
+            output_path=acquisition_output / "reflectance_distribution_histogram.png",
+            acquisition_id=acquisition_id
+        )
+
         global_summaries.append(summary)
 
         print("QC salvato.")
         print(f"Finite values: {summary['pct_finite_values']:.3f}%")
         print(f"Global min/max: {summary.get('global_min')} / {summary.get('global_max')}")
-        print(f"Valori < 0: {summary['n_negative_values']}")
-        print(f"Valori > 1: {summary['n_gt_1_values']}")
-        print(f"Valori > 100: {summary['n_gt_100_values']}")
+        print(
+            "Global percentili: "
+            f"p01={summary.get('global_p01')}, "
+            f"p05={summary.get('global_p05')}, "
+            f"p50={summary.get('global_p50')}, "
+            f"p95={summary.get('global_p95')}, "
+            f"p99={summary.get('global_p99')}"
+        )
+        print(f"Valori < 0: {summary['n_negative_values']} ({summary['pct_negative_values']:.4f}%)")
+        print(f"Valori > 1: {summary['n_gt_1_values']} ({summary['pct_gt_1_values']:.4f}%)")
+        print(f"Valori > 1.5: {summary['n_gt_1_5_values']} ({summary['pct_gt_1_5_values']:.4f}%)")
+        print(f"Valori > 10: {summary['n_gt_10_values']} ({summary['pct_gt_10_values']:.6f}%)")
+        print(f"Valori > 100: {summary['n_gt_100_values']} ({summary['pct_gt_100_values']:.6f}%)")
+        print(f"Istogramma salvato in: {acquisition_output / 'reflectance_distribution_histogram.png'}")
 
     save_json(
         {
