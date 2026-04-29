@@ -7,6 +7,7 @@ import tempfile
 import shutil
 import sys
 import os
+import io
 
 PYTHON = sys.executable
 CONFIG_PATH = Path("config.yaml")
@@ -164,18 +165,12 @@ def copy_if_exists(src, dst_dir, new_name=None):
         dst_dir.mkdir(parents=True, exist_ok=True)
         dst_name = new_name if new_name else src.name
         shutil.copy2(src, dst_dir / dst_name)
-        return True
+        return 1
 
-    return False
+    return 0
 
 
 def organize_selected_outputs(output_root: Path, export_options: dict):
-    """
-    Crea una cartella finale pulita:
-    HSI_outputs/<acquisition>/RAW_FULL/
-    HSI_outputs/<acquisition>/CLEAN_NAN/
-    copiando solo i file selezionati.
-    """
     output_root = Path(output_root)
 
     step07_root = output_root / "07_extracted_plant_pixels"
@@ -196,9 +191,6 @@ def organize_selected_outputs(output_root: Path, export_options: dict):
     for acq_dir in acquisitions:
         acq = acq_dir.name
 
-        # -------------------------
-        # RAW_FULL
-        # -------------------------
         raw_dir = organized_root / acq / "RAW_FULL"
         raw_qc_dir = step08_root / acq / "RAW_FULL"
 
@@ -228,9 +220,6 @@ def organize_selected_outputs(output_root: Path, export_options: dict):
                 new_name="RAW_FULL_spectral_signature_mean_p05_p95.png"
             )
 
-        # -------------------------
-        # CLEAN_NAN
-        # -------------------------
         clean_dir = organized_root / acq / "CLEAN_NAN"
         clean_qc_dir = step08_root / acq / "CLEAN_NAN"
 
@@ -261,6 +250,20 @@ def organize_selected_outputs(output_root: Path, export_options: dict):
             )
 
     return organized_root, copied_count
+
+
+def build_zip_from_folder(folder_path: Path):
+    folder_path = Path(folder_path)
+    buffer = io.BytesIO()
+
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for file_path in folder_path.rglob("*"):
+            if file_path.is_file():
+                arcname = file_path.relative_to(folder_path.parent)
+                z.write(file_path, arcname=str(arcname))
+
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 # ============================================================
@@ -419,41 +422,17 @@ col_raw_opts, col_clean_opts = st.columns(2)
 
 with col_raw_opts:
     st.markdown("### RAW_FULL")
-    raw_matrix_csv_gz = st.checkbox(
-        "RAW_FULL pixel matrix CSV.GZ",
-        value=True
-    )
-    raw_npz = st.checkbox(
-        "RAW_FULL scientific NPZ",
-        value=True
-    )
-    raw_statistics_csv = st.checkbox(
-        "RAW_FULL statistics CSV",
-        value=True
-    )
-    raw_signature_png = st.checkbox(
-        "RAW_FULL spectral signature PNG",
-        value=True
-    )
+    raw_matrix_csv_gz = st.checkbox("RAW_FULL pixel matrix CSV.GZ", value=True)
+    raw_npz = st.checkbox("RAW_FULL scientific NPZ", value=True)
+    raw_statistics_csv = st.checkbox("RAW_FULL statistics CSV", value=True)
+    raw_signature_png = st.checkbox("RAW_FULL spectral signature PNG", value=True)
 
 with col_clean_opts:
     st.markdown("### CLEAN_NAN")
-    clean_matrix_csv_gz = st.checkbox(
-        "CLEAN_NAN pixel matrix CSV.GZ",
-        value=True
-    )
-    clean_npz = st.checkbox(
-        "CLEAN_NAN scientific NPZ",
-        value=True
-    )
-    clean_statistics_csv = st.checkbox(
-        "CLEAN_NAN statistics CSV",
-        value=True
-    )
-    clean_signature_png = st.checkbox(
-        "CLEAN_NAN spectral signature PNG",
-        value=True
-    )
+    clean_matrix_csv_gz = st.checkbox("CLEAN_NAN pixel matrix CSV.GZ", value=True)
+    clean_npz = st.checkbox("CLEAN_NAN scientific NPZ", value=True)
+    clean_statistics_csv = st.checkbox("CLEAN_NAN statistics CSV", value=True)
+    clean_signature_png = st.checkbox("CLEAN_NAN spectral signature PNG", value=True)
 
 export_options = {
     "raw_matrix_csv_gz": raw_matrix_csv_gz,
@@ -569,7 +548,7 @@ with col_c:
 
 
 # ============================================================
-# 8. FINAL OUTPUT FOLDER
+# 8. FINAL OUTPUT FOLDER + DOWNLOAD
 # ============================================================
 
 st.subheader("8. Final organized output folder")
@@ -578,6 +557,7 @@ organized_output_dir = st.session_state.organized_output_dir
 
 if organized_output_dir:
     organized_output_dir = Path(organized_output_dir)
+
     st.write("Final folder:")
     st.code(str(organized_output_dir))
 
@@ -586,8 +566,19 @@ if organized_output_dir:
         "organizzati per acquisizione e versione dati."
     )
 
+    if organized_output_dir.exists():
+        zip_bytes = build_zip_from_folder(organized_output_dir)
+
+        st.download_button(
+            label="Download HSI_outputs ZIP",
+            data=zip_bytes,
+            file_name="HSI_outputs.zip",
+            mime="application/zip"
+        )
+
     if sys.platform.startswith("win"):
         if st.button("Open HSI_outputs folder"):
             os.startfile(organized_output_dir)
+
 else:
     st.info("No organized output folder available yet.")
