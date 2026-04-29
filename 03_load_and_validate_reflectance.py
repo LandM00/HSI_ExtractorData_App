@@ -282,10 +282,8 @@ def qc_cube_summary(cube, wavelengths, metadata, dat_path, hdr_path):
 
 def save_reflectance_histogram(cube, output_path, acquisition_id, summary=None):
     """
-    Salva un istogramma robusto della riflettanza.
-
-    Per evitare crash dovuti a outlier estremi tipo +/-1e38,
-    l'istogramma viene calcolato solo su un range diagnostico stabile.
+    Istogramma robusto senza plt.hist().
+    Serve solo come grafico diagnostico: non modifica i dati.
     """
     values = cube[np.isfinite(cube)]
 
@@ -293,25 +291,36 @@ def save_reflectance_histogram(cube, output_path, acquisition_id, summary=None):
         print(f"{acquisition_id}: nessun valore finito per istogramma.")
         return
 
-    # Range diagnostico stabile per reflectance
+    # Togliamo solo outlier estremi dal GRAFICO, non dai dati
     values = values[(values >= -0.5) & (values <= 3.0)]
 
     if values.size == 0:
         print(f"{acquisition_id}: nessun valore nel range istogramma.")
         return
 
-    # Campionamento per alleggerire Streamlit Cloud
-    max_points = 1_000_000
+    # Campionamento per evitare problemi di memoria su Streamlit Cloud
+    max_points = 500_000
     if values.size > max_points:
         rng = np.random.default_rng(42)
         values = rng.choice(values, size=max_points, replace=False)
 
-    plt.figure(figsize=(9, 5))
-    plt.hist(values, bins=300, log=True)
+    values = values.astype(np.float32)
 
+    # Istogramma calcolato manualmente, range fisso
+    counts, bin_edges = np.histogram(
+        values,
+        bins=300,
+        range=(-0.5, 3.0)
+    )
+
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    plt.figure(figsize=(9, 5))
+    plt.plot(bin_centers, counts)
+    plt.yscale("log")
     plt.xlabel("Reflectance")
     plt.ylabel("Frequency log scale")
-    plt.title(title)
+    plt.title(f"{acquisition_id} - Reflectance distribution")
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
