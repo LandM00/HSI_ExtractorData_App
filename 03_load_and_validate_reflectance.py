@@ -395,12 +395,12 @@ def main():
             acquisition_output / "reflectance_cube_summary.json"
         )
 
-        save_reflectance_histogram(
-            cube=cube,
-            summary=summary,
-            output_path=acquisition_output / "reflectance_distribution_histogram.png",
-            acquisition_id=acquisition_id
-        )
+#        save_reflectance_histogram(
+#            cube=cube,
+#            summary=summary,
+#            output_path=acquisition_output / "reflectance_distribution_histogram.png",
+#            acquisition_id=acquisition_id
+#        )
 
         global_summaries.append(summary)
 
