@@ -280,7 +280,7 @@ def qc_cube_summary(cube, wavelengths, metadata, dat_path, hdr_path):
     return summary
 
 
-def save_reflectance_histogram(cube, output_path, title, acquisition_id):
+def save_reflectance_histogram(cube, output_path, acquisition_id, summary=None):
     """
     Salva un istogramma robusto della riflettanza.
 
